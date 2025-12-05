@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         惠资产账户管理 (带悬浮球版)
 // @namespace    http://violentmonkey.net/
-// @version      2.3
-// @description  专为 Violentmonkey 优化：页面锁 Token，带侧边悬浮球切换账号。
+// @version      1.0
+// @description  修复退出托管无法清除Cookie的Bug
 // @author       Mai
 // @match        *://*.yonghui.cn/*
 // @grant        GM_registerMenuCommand
@@ -15,7 +15,6 @@
 
 (function () {
     'use strict';
-
     // ================= 配置区域 =================
     const REDIRECT_URL = 'https://hzcf.yonghui.cn/';
     // ===========================================
@@ -28,26 +27,49 @@
     const KEYS = Object.keys(LOCK_MAP);
     const IS_ACTIVE = KEYS.length > 0;
 
+    // [修复] 添加一个全局标记，用于在退出时绕过拦截器
+    let isExiting = false;
+    // =================================================
+    // 🛠️ 核心工具函数
+    // =================================================
+
+    const safeSetCookie = (key, val) => {
+        const hostname = location.hostname;
+        const paths = ['/', location.pathname];
+        const targetDomains = [undefined, hostname];
+
+        targetDomains.forEach(d => {
+            paths.forEach(p => {
+                const domainAttr = d ? `; domain=${d}` : '';
+                document.cookie = `${key}=; path=${domainAttr}; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+            });
+        });
+        document.cookie = `${key}=${val}; path=/; max-age=604800`;
+    };
+
+    const applyAccountData = (dataMap) => {
+        if (!dataMap) return;
+        Object.keys(dataMap).forEach(key => {
+            const val = dataMap[key];
+            try {
+                // 1. 写入 Storage
+                localStorage.setItem(key, val);
+                sessionStorage.setItem(key, val);
+                // 2. 写入 Cookie
+                safeSetCookie(key, val);
+            } catch (e) {
+                console.error("[VM] Apply Error:", e);
+            }
+        });
+    };
     // =================================================
     // 🚀 核心拦截逻辑
     // =================================================
     if (IS_ACTIVE) {
         console.log(`%c[VM] 托管中: ${activeProfile.name}`, "color: #00e676; font-weight: bold;");
 
-        const safeSetCookie = (key, val) => {
-            const hostname = location.hostname;
-            const paths = ['/', location.pathname];
-            const targetDomains = [undefined, hostname];
 
-            targetDomains.forEach(d => {
-                paths.forEach(p => {
-                    const domainAttr = d ? `; domain=${d}` : '';
-                    document.cookie = `${key}=; path=${domainAttr}; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
-                });
-            });
-            document.cookie = `${key}=${val}; path=/; max-age=604800`;
-        };
-
+        // 初始检查与恢复
         KEYS.forEach(key => {
             const val = LOCK_MAP[key];
             try {
@@ -55,6 +77,7 @@
                 if (sessionStorage.getItem(key) !== val) sessionStorage.setItem(key, val);
                 const cookieStr = document.cookie || "";
                 const count = (cookieStr.match(new RegExp(`(?:^|;\\s*)${key}=`, 'g')) || []).length;
+                // 注意：这里运行的时候拦截器还没挂载，所以 safeSetCookie 可以成功
                 if (count === 0 || count > 1 || getCookie(key) !== val) {
                     safeSetCookie(key, val);
                 }
@@ -62,16 +85,22 @@
         });
 
         try {
+            // 劫持 Storage
             const hijackProto = (proto) => {
                 const _set = proto.setItem;
                 const _remove = proto.removeItem;
                 const _clear = proto.clear;
-                proto.setItem = function (k, v) { if (LOCK_MAP[k]) return; _set.apply(this, arguments); };
-                proto.removeItem = function (k) { if (LOCK_MAP[k]) return; _remove.apply(this, arguments); };
-                proto.clear = function () { _clear.apply(this); KEYS.forEach(k => this.setItem(k, LOCK_MAP[k])); };
+                proto.setItem = function (k, v) { if (!isExiting && LOCK_MAP[k]) return; _set.apply(this, arguments); };
+                proto.removeItem = function (k) { if (!isExiting && LOCK_MAP[k]) return; _remove.apply(this, arguments); };
+                proto.clear = function () {
+                    if (isExiting) { _clear.apply(this); return; }
+                    _clear.apply(this);
+                    KEYS.forEach(k => this.setItem(k, LOCK_MAP[k]));
+                };
             };
             hijackProto(Storage.prototype);
 
+            // [修复] 劫持 Cookie
             const cookieDesc = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie') ||
                 Object.getOwnPropertyDescriptor(HTMLDocument.prototype, 'cookie');
             if (cookieDesc && cookieDesc.set) {
@@ -81,8 +110,12 @@
                     get: function () { return cookieDesc.get.call(document); },
                     set: function (val) {
                         val = String(val).trim();
-                        for (let key of KEYS) {
-                            if (val.startsWith(`${key}=`)) return;
+
+                        // [关键修复] 如果不是正在退出，才进行拦截检查
+                        if (!isExiting) {
+                            for (let key of KEYS) {
+                                if (val.startsWith(`${key}=`)) return;
+                            }
                         }
                         _set.call(document, val);
                     }
@@ -186,7 +219,7 @@
         ball.onclick = (e) => {
             e.stopPropagation();
             container.classList.toggle('vm-active');
-            if(container.classList.contains('vm-active')) renderAccountList(listContainer);
+            if (container.classList.contains('vm-active')) renderAccountList(listContainer);
         };
 
         header.querySelector('#vm-close-menu').onclick = (e) => {
@@ -195,7 +228,7 @@
         };
 
         document.addEventListener('click', (e) => {
-            if(!container.contains(e.target)) container.classList.remove('vm-active');
+            if (!container.contains(e.target)) container.classList.remove('vm-active');
         });
 
         let isDragging = false;
@@ -233,8 +266,10 @@
         logoutItem.className = `vm-list-item ${!IS_ACTIVE ? 'current' : ''}`;
         logoutItem.innerHTML = `<span class="icon">🧹</span><span>停止托管 & 清空Cookie</span>`;
         logoutItem.onclick = () => {
-            if(confirm("⚠️ 确定要停止托管并清空当前页面的 Cookie 吗？\n\n这将导致当前页面退出登录。")) {
-                // 1. 停止托管
+            if (confirm("⚠️ 确定要停止托管并清空当前页面的 Cookie 吗？\n\n这将导致当前页面退出登录。")) {
+                // [修复] 1. 开启放行标记，允许删除操作穿透拦截器
+                isExiting = true;
+
                 CONFIG.current = null;
                 GM_setValue('VM_ACCOUNT_MANAGER', CONFIG);
 
@@ -283,19 +318,22 @@
             `;
 
             item.onclick = (e) => {
-                if(e.target.classList.contains('del-btn')) return;
-                if(isCurr) return;
-                if(confirm(`切换到账号 [${acc.name}] ?`)) {
+                if (e.target.classList.contains('del-btn')) return;
+                if (isCurr) return;
+                if (confirm(`切换到 [${acc.name}] ?`)) {
+                    isExiting = true;
                     CONFIG.current = id;
                     GM_setValue('VM_ACCOUNT_MANAGER', CONFIG);
+                    console.log("[VM] Switching: Applying new data immediately...");
                     alertAndRedirect(`正在切换...`);
                 }
+
             };
 
             item.querySelector('.del-btn').onclick = (e) => {
                 e.stopPropagation();
-                if(confirm(`确定删除 [${acc.name}] 吗?`)) {
-                    if(CONFIG.current == id) CONFIG.current = null;
+                if (confirm(`确定删除 [${acc.name}] 吗?`)) {
+                    if (CONFIG.current == id) CONFIG.current = null;
                     delete CONFIG.list[id];
                     GM_setValue('VM_ACCOUNT_MANAGER', CONFIG);
                     renderAccountList(container);
@@ -307,7 +345,7 @@
     }
 
     const waitBody = setInterval(() => {
-        if(document.body) { clearInterval(waitBody); initUI(); }
+        if (document.body) { clearInterval(waitBody); initUI(); }
     }, 100);
 
     // =================================================
@@ -321,14 +359,17 @@
         let val = prompt(`请输入${key}的新值:`, oldVal);
         if (val === null) return;
 
+        // [修复] 手动修改也临时开启权限
+        isExiting = true;
+
         let shouldUpdateProfile = false;
         if (activeProfile) {
             shouldUpdateProfile = confirm(`✅ 即将写入当前页面。\n\n是否同时更新到托管账号 [${activeProfile.name}] 中？`);
         }
 
-        localStorage.setItem(key, val);
-        sessionStorage.setItem(key, val);
-        document.cookie = `${key}=${val}; path=/; max-age=604800`;
+        isExiting = true; // 允许写入
+        applyAccountData({ [key]: val }); // 统一调用工具函数立即生效
+        isExiting = false;
 
         if (shouldUpdateProfile && activeProfileId) {
             CONFIG.list[activeProfileId].data[key] = val;
@@ -378,13 +419,15 @@
 
     function alertAndRedirect(msg) {
         console.log(msg);
-        setTimeout(() => {
-             if (REDIRECT_URL && REDIRECT_URL.trim() !== '' && !location.href.startsWith(REDIRECT_URL)) {
-                location.href = REDIRECT_URL;
-            } else {
-                location.reload();
-            }
-        }, 500);
+        const targetUrl = (REDIRECT_URL && REDIRECT_URL.trim() !== '') ? REDIRECT_URL : location.href;
+        const cleanCurrent = location.href.replace(/\/$/, '');
+        const cleanTarget = targetUrl.replace(/\/$/, '');
+        if (cleanCurrent === cleanTarget) {
+            location.reload();
+        }
+        else {
+            location.href = targetUrl;
+        }
     }
 
     function getCookie(n) {
