@@ -17,6 +17,10 @@
     'use strict';
     // ================= 配置区域 =================
     const REDIRECT_URL = 'https://hzcf.yonghui.cn/';
+    // 悬浮球位置和可见性
+    const BALL_POS_KEY = 'VM_BALL_POS';
+    const BALL_VISIBLE_KEY = 'VM_BALL_VISIBLE';
+
     // ===========================================
 
     // 初始化数据
@@ -136,10 +140,10 @@
                 transition: right 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
                 font-family: system-ui, -apple-system, sans-serif;
             }
-            #vm-ball-container:hover, #vm-ball-container.vm-active { right: 10px; }
+            #vm-ball-container.vm-active { right: 10px; }
             #vm-ball {
                 width: 48px; height: 48px;
-                background: linear-gradient(135deg, #00C6FF 0%, #0072FF 100%);
+                background: linear-gradient(135deg, #1872e4 0%, #39e8f5ff 100%);
                 border-radius: 50%; box-shadow: 0 4px 15px rgba(0, 114, 255, 0.4);
                 cursor: pointer; display: flex; align-items: center; justify-content: center;
                 color: white; font-size: 24px; user-select: none; transition: transform 0.2s;
@@ -187,6 +191,15 @@
 
         const container = document.createElement('div');
         container.id = 'vm-ball-container';
+        // 读取上次保存的位置（只记 top，保持固定在右侧）
+        const savedPos = GM_getValue(BALL_POS_KEY, null);
+        if (savedPos && typeof savedPos.top === 'number') {
+            // 简单做一次安全夹紧，避免分辨率变化后跑出屏幕
+            const minTop = 0;
+            const maxTop = Math.max(window.innerHeight - 60, 0);
+            const top = Math.min(Math.max(savedPos.top, minTop), maxTop);
+            container.style.top = top + 'px';
+        }
 
         const panel = document.createElement('div');
         panel.id = 'vm-menu-panel';
@@ -238,12 +251,26 @@
         });
         document.addEventListener('mousemove', (e) => {
             if (!isDragging) return;
-            container.style.top = `${startTop + (e.clientY - startY)}px`;
+            let newTop = startTop + (e.clientY - startY);
+            const minTop = 0;
+            const maxTop = Math.max(window.innerHeight - container.offsetHeight, 0);
+            newTop = Math.min(Math.max(newTop, minTop), maxTop);
+            container.style.top = newTop + 'px';
         });
-        document.addEventListener('mouseup', () => { isDragging = false; });
+
+        document.addEventListener('mouseup', () => {
+            if (!isDragging) return;
+            isDragging = false;
+            const top = container.offsetTop;
+            GM_setValue(BALL_POS_KEY, { top });
+        });
+
 
         container.appendChild(panel);
         container.appendChild(ball);
+        // 根据开关控制是否显示悬浮球
+        const isVisible = GM_getValue(BALL_VISIBLE_KEY, true);
+        container.style.display = isVisible ? 'flex' : 'none';
         document.body.appendChild(container);
     }
 
@@ -437,6 +464,17 @@
 
     GM_registerMenuCommand("🔄 恢复悬浮球", () => {
         document.getElementById('vm-ball-container').style.display = 'flex';
+    });
+    GM_registerMenuCommand("显示悬浮球", () => {
+        GM_setValue(BALL_VISIBLE_KEY, true);
+        const el = document.getElementById('vm-ball-container');
+        if (el) el.style.display = 'flex';
+    });
+
+    GM_registerMenuCommand("隐藏悬浮球", () => {
+        GM_setValue(BALL_VISIBLE_KEY, false);
+        const el = document.getElementById('vm-ball-container');
+        if (el) el.style.display = 'none';
     });
 
 })();
