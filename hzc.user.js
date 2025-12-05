@@ -20,10 +20,27 @@
     // 悬浮球位置和可见性
     const BALL_POS_KEY = 'VM_BALL_POS';
     const BALL_VISIBLE_KEY = 'VM_BALL_VISIBLE';
+    const STORAGE_KEY = 'p2a_remove_watermark_enabled';
+    const GlobalVarName = "webpackChunkp2a_platform_fe"
+    const Patches = [
+        {
+            // 目标：找到 watermark_alpha: 0.04 (压缩后可能变成 watermark_alpha:.04)
+            // 策略：直接匹配这行配置，将其改为 0
+            find: /watermark_alpha\s*:\s*0?\.04/g,
+            replace: 'watermark_alpha:0.00'
+        },
+        {
+            // 备选目标：如果上面没生效，尝试把 watermark_txt 的内容置空
+            // 匹配 watermark_txt:"..." 或 watermark_txt:'...'
+            find: /watermark_txt\s*:\s*[`'"].*?[`'"]/g,
+            replace: 'watermark_txt:""'
+        }
+    ]
 
     // ===========================================
 
     // 初始化数据
+    let isEnabled = GM_getValue(STORAGE_KEY, true);
     let CONFIG = GM_getValue('VM_ACCOUNT_MANAGER', { current: null, list: {} });
     let activeProfileId = CONFIG.current;
     let activeProfile = activeProfileId ? CONFIG.list[activeProfileId] : null;
@@ -461,7 +478,79 @@
         let v = document.cookie.match('(^|;) ?' + n + '=([^;]*)(;|$)');
         return v ? v[2] : null;
     }
+    // Hook Webpack 去掉水印
+    function hookWebpack() {
+        let chunkWindow = unsafeWindow || window;
 
+        const hookPush = (originalPush) => {
+            return function (chunk) {
+                const modules = chunk[1];
+
+                for (let moduleId in modules) {
+                    let originalFactory = modules[moduleId];
+                    let funcStr = originalFactory.toString();
+
+                    // 1. 定位目标模块 (包含 watermark 相关代码)
+                    if (funcStr.includes('watermark_txt') && funcStr.includes('watermark_alpha')) {
+
+                        // 2. 检查开关状态
+                        if (!isEnabled) {
+                            console.log(`[Hook] 发现水印模块(${moduleId})，但【去除水印】开关已关闭，跳过处理。`);
+                            // 直接返回，不进行修改，保持原样显示水印
+                            continue;
+                        }
+
+                        console.log(`[Hook] 发现水印模块(${moduleId})，准备去除水印...`);
+
+                        let newFuncStr = funcStr;
+                        let isPatched = false;
+
+                        // 3. 执行代码替换
+                        Patches.forEach(patch => {
+                            if (patch.find.test(newFuncStr)) {
+                                newFuncStr = newFuncStr.replace(patch.find, patch.replace);
+                                isPatched = true;
+                                console.log('[Hook] 成功替换水印参数');
+                            }
+                        });
+
+                        // 4. 重构模块
+                        if (isPatched) {
+                            try {
+                                // 使用 eval 重新生成函数，完美保留压缩后的参数名 (t, e, n 等)
+                                // 避免 "t is not defined" 错误
+                                const patchedFactory = (0, eval)(`(${newFuncStr})`);
+                                modules[moduleId] = patchedFactory;
+                                console.log('[Hook] 水印参数已清除 (Eval Mode)');
+                            } catch (e) {
+                                console.error('[Hook Error] 重构失败:', e);
+                            }
+                        }
+                    }
+                }
+
+                return originalPush.call(this, chunk);
+            };
+        };
+
+        // 拦截 Webpack 加载
+        let webpackGlobal = chunkWindow[GlobalVarName];
+        if (Array.isArray(webpackGlobal)) {
+            webpackGlobal.push = hookPush(webpackGlobal.push.bind(webpackGlobal));
+        } else {
+            let _val;
+            Object.defineProperty(chunkWindow, GlobalVarName, {
+                get: function () { return _val; },
+                set: function (val) {
+                    _val = val;
+                    if (val && Array.isArray(val)) {
+                        val.push = hookPush(val.push.bind(val));
+                    }
+                },
+                configurable: true
+            });
+        }
+    }
     GM_registerMenuCommand("🔄 恢复悬浮球", () => {
         document.getElementById('vm-ball-container').style.display = 'flex';
     });
@@ -476,5 +565,15 @@
         const el = document.getElementById('vm-ball-container');
         if (el) el.style.display = 'none';
     });
-
+    const menuName = isEnabled ? '✅ 去除水印：已开启 (点击关闭)' : '❌ 去除水印：已关闭 (点击开启)';
+    GM_registerMenuCommand(menuName, () => {
+        isEnabled = !isEnabled;
+        GM_setValue(STORAGE_KEY, isEnabled);
+        GM_setValue("GlobalVarName", GlobalVarName)
+        GM_setValue("Patches", Patches)
+        // 因为 Webpack 模块是在页面加载时初始化的，修改配置后需要刷新才能生效
+        alert(`去除水印功能已${isEnabled ? '开启' : '关闭'}，即将刷新页面生效。`);
+        location.reload();
+    });
+    hookWebpack();
 })();
