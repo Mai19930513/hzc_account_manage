@@ -1,14 +1,16 @@
 // ==UserScript==
 // @name         惠资产账户管理 (带悬浮球版)
 // @namespace    http://violentmonkey.net/
-// @version      1.0
-// @description  修复退出托管无法清除Cookie的Bug
+// @version      1.1
+// @description  管理多个账号并快速切换+关闭水印
 // @author       Mai
 // @match        *://*.yonghui.cn/*
 // @grant        GM_registerMenuCommand
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_setClipboard
+// @grant        unsafeWindow
+// @grant        GM_notification
 // @run-at       document-start
 // @inject-into  page
 // ==/UserScript==
@@ -17,26 +19,42 @@
     'use strict';
     // ================= 配置区域 =================
     const REDIRECT_URL = 'https://hzcf.yonghui.cn/';
-    // 悬浮球位置和可见性
     const BALL_POS_KEY = 'VM_BALL_POS';
     const BALL_VISIBLE_KEY = 'VM_BALL_VISIBLE';
     const STORAGE_KEY = 'p2a_remove_watermark_enabled';
     const GlobalVarName = "webpackChunkp2a_platform_fe"
+    const blockedKeywords = ['微信', 'ua', 'name', 't', 'browserName']
     const Patches = [
         {
             // 目标：找到 watermark_alpha: 0.04 (压缩后可能变成 watermark_alpha:.04)
-            // 策略：直接匹配这行配置，将其改为 0
             find: /watermark_alpha\s*:\s*0?\.04/g,
-            replace: 'watermark_alpha:0.00'
+            replace: 'watermark_alpha:0'
         },
         {
-            // 备选目标：如果上面没生效，尝试把 watermark_txt 的内容置空
-            // 匹配 watermark_txt:"..." 或 watermark_txt:'...'
-            find: /watermark_txt\s*:\s*[`'"].*?[`'"]/g,
-            replace: 'watermark_txt:""'
+            // 备选目标：尝试把 watermark_txt 的内容置空
+            find: /watermark_txt\s*:/g,
+            replace: 'watermark_txt:"",_ignore_txt:'
+        }, {
+            find: /不在微信浏览器或企业微信中打开/g,
+            replace: ''
         }
     ]
-
+    const MSG_CONFIG = {
+        url: 'https://hzc.yonghui.cn/hmsg/v1/1/messages/user?size=10&page=0&readFlag=0',
+        interval: 300 * 1000,
+        checkHasUnread: (json) => {
+            if (json && json.empty === false) {
+                const count = Number(json.totalElements);
+                return !isNaN(count) && count > 0;
+            }
+            return false;
+        },
+        getUnreadCount: (json) => {
+            return (json && json.totalElements) ? json.totalElements : "新";
+        }
+    };
+    let lastUnreadStatus = false; // 上次是否有未读
+    let lastUnreadCount = 0;      // 上次未读数量 (用于防骚扰：数量增加才提示)
     // ===========================================
 
     // 初始化数据
@@ -47,9 +65,10 @@
     const LOCK_MAP = activeProfile ? activeProfile.data : {};
     const KEYS = Object.keys(LOCK_MAP);
     const IS_ACTIVE = KEYS.length > 0;
-
+    hookConsoleMethod('log', blockedKeywords);
     // [修复] 添加一个全局标记，用于在退出时绕过拦截器
     let isExiting = false;
+
     // =================================================
     // 🛠️ 核心工具函数
     // =================================================
@@ -73,24 +92,88 @@
         Object.keys(dataMap).forEach(key => {
             const val = dataMap[key];
             try {
-                // 1. 写入 Storage
                 localStorage.setItem(key, val);
                 sessionStorage.setItem(key, val);
-                // 2. 写入 Cookie
                 safeSetCookie(key, val);
             } catch (e) {
                 console.error("[VM] Apply Error:", e);
             }
         });
     };
+    // 日志屏蔽函数（可选）
+    function hookConsoleMethod(methodName, keywords) {
+        const targetWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+        const origin = targetWindow.console[methodName];
+
+        targetWindow.console[methodName] = function (...args) {
+            const str = args.map(String).join(' ');
+            if (keywords.some(k => str.includes(k))) return;
+            origin.apply(targetWindow.console, args);
+        }
+    }
+    // 检查未读消息
+    function checkMessages() {
+        if (!GM_getValue('enable_msg_notify')) {
+            return;
+        }
+        console.log('[MsgPoller] 正在检查未读消息...');
+        fetch(MSG_CONFIG.url, {
+            method: 'GET', // 或 'POST'，视接口而定
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${getCookie('access_token')}`
+            },
+            // 确保携带 Cookie
+            credentials: 'include'
+        })
+            .then(response => {
+                if (!response.ok) throw new Error('Network response was not ok');
+                return response.json();
+            })
+            .then(data => {
+                // 1. 判断是否有未读
+                const hasUnread = MSG_CONFIG.checkHasUnread(data);
+                const currentCount = Number(MSG_CONFIG.getUnreadCount(data)) || 0;
+
+                console.log(`[MsgPoller] 检查结果: ${hasUnread ? '有未读' : '无未读'}, 数量: ${currentCount}`);
+
+                // 2. 触发通知逻辑
+                // 条件：(当前有未读) 且 (数量比上次多 OR 之前是无未读状态)
+                // 这样设计是为了：如果一直保持 5 条未读，不会每 30 秒都弹窗骚扰你
+                if (hasUnread) {
+                    if (currentCount > lastUnreadCount || !lastUnreadStatus) {
+
+                        // 发送通知
+                        GM_notification({
+                            text: `您有 ${currentCount} 条未处理的惠资产消息`,
+                            title: "📬 新消息提醒",
+                            image: "https://hzcf.yonghui.cn/11e5e72c571b82921cfc.png", // 尝试使用网站图标
+                            timeout: 5000,
+                            onclick: () => {
+                                window.focus();
+                                // 可选：点击跳转到消息中心
+                                window.location.href = 'https://hzcf.yonghui.cn/hmsg/user-message/list'; 
+                            }
+                        });
+
+                        console.log('[MsgPoller] 通知已发送');
+                    }
+                }
+
+                // 3. 更新状态
+                lastUnreadStatus = hasUnread;
+                lastUnreadCount = currentCount;
+            })
+            .catch(error => {
+                console.error('[MsgPoller] 请求失败:', error);
+            });
+    }
     // =================================================
     // 🚀 核心拦截逻辑
     // =================================================
     if (IS_ACTIVE) {
         console.log(`%c[VM] 托管中: ${activeProfile.name}`, "color: #00e676; font-weight: bold;");
 
-
-        // 初始检查与恢复
         KEYS.forEach(key => {
             const val = LOCK_MAP[key];
             try {
@@ -98,7 +181,6 @@
                 if (sessionStorage.getItem(key) !== val) sessionStorage.setItem(key, val);
                 const cookieStr = document.cookie || "";
                 const count = (cookieStr.match(new RegExp(`(?:^|;\\s*)${key}=`, 'g')) || []).length;
-                // 注意：这里运行的时候拦截器还没挂载，所以 safeSetCookie 可以成功
                 if (count === 0 || count > 1 || getCookie(key) !== val) {
                     safeSetCookie(key, val);
                 }
@@ -106,7 +188,6 @@
         });
 
         try {
-            // 劫持 Storage
             const hijackProto = (proto) => {
                 const _set = proto.setItem;
                 const _remove = proto.removeItem;
@@ -121,7 +202,6 @@
             };
             hijackProto(Storage.prototype);
 
-            // [修复] 劫持 Cookie
             const cookieDesc = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie') ||
                 Object.getOwnPropertyDescriptor(HTMLDocument.prototype, 'cookie');
             if (cookieDesc && cookieDesc.set) {
@@ -131,8 +211,6 @@
                     get: function () { return cookieDesc.get.call(document); },
                     set: function (val) {
                         val = String(val).trim();
-
-                        // [关键修复] 如果不是正在退出，才进行拦截检查
                         if (!isExiting) {
                             for (let key of KEYS) {
                                 if (val.startsWith(`${key}=`)) return;
@@ -195,11 +273,13 @@
             }
             .vm-btn {
                 border: 1px solid #e0e0e0; background: #fff; color: #555; padding: 6px;
-                border-radius: 6px; cursor: pointer; font-size: 12px; text-align: center; transition: all 0.2s;
+                border-radius: 6px; cursor: pointer; font-size: 12px; text-align: center; transition: all 0.2s; display:flex; align-items:center; justify-content:center;
             }
             .vm-btn:hover { background: #f5f5f5; border-color: #ccc; }
             .vm-btn.primary { background: #0072FF; color: white; border-color: #0072FF; }
             .vm-btn.primary:hover { background: #005bb5; }
+            /* 新增：全宽按钮样式，用于去水印开关 */
+            .vm-btn.full-width { grid-column: span 2; font-weight: bold; }
             @keyframes vm-fade-in { from { opacity: 0; transform: translateX(10px); } to { opacity: 1; transform: translateX(0); } }
             .vm-list::-webkit-scrollbar { width: 4px; }
             .vm-list::-webkit-scrollbar-thumb { background: #ddd; border-radius: 2px; }
@@ -208,10 +288,9 @@
 
         const container = document.createElement('div');
         container.id = 'vm-ball-container';
-        // 读取上次保存的位置（只记 top，保持固定在右侧）
+        // 读取上次保存的位置
         const savedPos = GM_getValue(BALL_POS_KEY, null);
         if (savedPos && typeof savedPos.top === 'number') {
-            // 简单做一次安全夹紧，避免分辨率变化后跑出屏幕
             const minTop = 0;
             const maxTop = Math.max(window.innerHeight - 60, 0);
             const top = Math.min(Math.max(savedPos.top, minTop), maxTop);
@@ -231,8 +310,31 @@
         renderAccountList(listContainer);
         panel.appendChild(listContainer);
 
+        // --- 构建 Toolbar ---
         const toolbar = document.createElement('div');
         toolbar.className = 'vm-toolbar';
+
+        // 1. 去水印开关按钮 (独占一行)
+        const wmBtnText = isEnabled ? '🚫 去水印: 已开启' : '💧 去水印: 已关闭';
+        const wmBtnClass = isEnabled ? 'primary full-width' : 'full-width';
+
+        const wmBtn = createBtn(wmBtnText, wmBtnClass, function () {
+            // 切换状态
+            isEnabled = !isEnabled;
+            GM_setValue(STORAGE_KEY, isEnabled);
+
+            // 视觉反馈
+            this.textContent = isEnabled ? '🚫 去水印: 已开启' : '💧 去水印: 已关闭';
+            this.className = `vm-btn full-width ${isEnabled ? 'primary' : ''}`;
+
+            // 弹窗提示刷新
+            if (confirm(`去除水印功能已${isEnabled ? '开启' : '关闭'}。\n\n需要刷新页面才能生效，是否立即刷新？`)) {
+                location.reload();
+            }
+        });
+        toolbar.appendChild(wmBtn);
+
+        // 2. 其他功能按钮
         toolbar.append(
             createBtn('➕ 保存当前', 'primary', saveCurrentAsProfile),
             createBtn('🛠️ 改Token', '', manualSetMenu),
@@ -241,6 +343,7 @@
         );
         panel.appendChild(toolbar);
 
+        // --- 构建悬浮球 ---
         const ball = document.createElement('div');
         ball.id = 'vm-ball';
         ball.innerHTML = '🧑‍';
@@ -261,6 +364,7 @@
             if (!container.contains(e.target)) container.classList.remove('vm-active');
         });
 
+        // 拖拽逻辑
         let isDragging = false;
         let startY, startTop;
         ball.addEventListener('mousedown', (e) => {
@@ -282,10 +386,9 @@
             GM_setValue(BALL_POS_KEY, { top });
         });
 
-
         container.appendChild(panel);
         container.appendChild(ball);
-        // 根据开关控制是否显示悬浮球
+
         const isVisible = GM_getValue(BALL_VISIBLE_KEY, true);
         container.style.display = isVisible ? 'flex' : 'none';
         document.body.appendChild(container);
@@ -303,36 +406,21 @@
         container.innerHTML = '';
         const ids = Object.keys(CONFIG.list);
 
-        // =========================================================================
-        // "停止托管 & 清空"
-        // =========================================================================
+        // 停止托管项
         const logoutItem = document.createElement('div');
         logoutItem.className = `vm-list-item ${!IS_ACTIVE ? 'current' : ''}`;
         logoutItem.innerHTML = `<span class="icon">🧹</span><span>停止托管 & 清空Cookie</span>`;
         logoutItem.onclick = () => {
             if (confirm("⚠️ 确定要停止托管并清空当前页面的 Cookie 吗？\n\n这将导致当前页面退出登录。")) {
-                // [修复] 1. 开启放行标记，允许删除操作穿透拦截器
                 isExiting = true;
-
                 CONFIG.current = null;
                 GM_setValue('VM_ACCOUNT_MANAGER', CONFIG);
-
-                // 2. 执行强力清理 (主要针对 access_token)
                 const targetKeys = ["access_token"];
                 targetKeys.forEach(key => {
-                    // Storage
                     localStorage.removeItem(key);
                     sessionStorage.removeItem(key);
-
-                    // Cookie (尝试清理根域、子域、当前域)
-                    const domains = [
-                        undefined,
-                        location.hostname,
-                        '.yonghui.cn',
-                        location.hostname.split('.').slice(-2).join('.') // 尝试根域
-                    ];
+                    const domains = [undefined, location.hostname, '.yonghui.cn', location.hostname.split('.').slice(-2).join('.')];
                     const paths = ['/', location.pathname];
-
                     domains.forEach(d => {
                         paths.forEach(p => {
                             const dAttr = d ? `; domain=${d}` : '';
@@ -340,13 +428,10 @@
                         });
                     });
                 });
-
-                // 3. 刷新
                 alertAndRedirect("✅ 已停止托管并清理，即将刷新...");
             }
         };
         container.appendChild(logoutItem);
-        // =========================================================================
 
         if (ids.length === 0) return;
 
@@ -364,13 +449,10 @@
             item.onclick = (e) => {
                 if (e.target.classList.contains('del-btn')) return;
                 if (isCurr) return;
-                if (confirm(`切换到 [${acc.name}] ?`)) {
-                    isExiting = true;
-                    CONFIG.current = id;
-                    GM_setValue('VM_ACCOUNT_MANAGER', CONFIG);
-                    console.log("[VM] Switching: Applying new data immediately...");
-                    alertAndRedirect(`正在切换...`);
-                }
+                isExiting = true;
+                CONFIG.current = id;
+                GM_setValue('VM_ACCOUNT_MANAGER', CONFIG);
+                alertAndRedirect(`正在切换...`);
 
             };
 
@@ -383,7 +465,6 @@
                     renderAccountList(container);
                 }
             };
-
             container.appendChild(item);
         });
     }
@@ -402,17 +483,10 @@
 
         let val = prompt(`请输入${key}的新值:`, oldVal);
         if (val === null) return;
-
-        // [修复] 手动修改也临时开启权限
         isExiting = true;
-
         let shouldUpdateProfile = false;
-        if (activeProfile) {
-            shouldUpdateProfile = confirm(`✅ 即将写入当前页面。\n\n是否同时更新到托管账号 [${activeProfile.name}] 中？`);
-        }
-
-        isExiting = true; // 允许写入
-        applyAccountData({ [key]: val }); // 统一调用工具函数立即生效
+        if (activeProfile) shouldUpdateProfile = confirm(`✅ 即将写入当前页面。\n\n是否同时更新到托管账号 [${activeProfile.name}] 中？`);
+        applyAccountData({ [key]: val });
         isExiting = false;
 
         if (shouldUpdateProfile && activeProfileId) {
@@ -468,8 +542,7 @@
         const cleanTarget = targetUrl.replace(/\/$/, '');
         if (cleanCurrent === cleanTarget) {
             location.reload();
-        }
-        else {
+        } else {
             location.href = targetUrl;
         }
     }
@@ -478,62 +551,48 @@
         let v = document.cookie.match('(^|;) ?' + n + '=([^;]*)(;|$)');
         return v ? v[2] : null;
     }
+
     // Hook Webpack 去掉水印
     function hookWebpack() {
         let chunkWindow = unsafeWindow || window;
-
         const hookPush = (originalPush) => {
             return function (chunk) {
                 const modules = chunk[1];
-
                 for (let moduleId in modules) {
                     let originalFactory = modules[moduleId];
                     let funcStr = originalFactory.toString();
 
-                    // 1. 定位目标模块 (包含 watermark 相关代码)
                     if (funcStr.includes('watermark_txt') && funcStr.includes('watermark_alpha')) {
-
-                        // 2. 检查开关状态
                         if (!isEnabled) {
-                            console.log(`[Hook] 发现水印模块(${moduleId})，但【去除水印】开关已关闭，跳过处理。`);
-                            // 直接返回，不进行修改，保持原样显示水印
+                            // console.log(`[Hook] 发现水印模块(${moduleId})，但【去除水印】开关已关闭，跳过。`);
                             continue;
                         }
-
-                        console.log(`[Hook] 发现水印模块(${moduleId})，准备去除水印...`);
-
+                        // console.log(`[Hook] 发现水印模块(${moduleId})，去除水印...`);
                         let newFuncStr = funcStr;
                         let isPatched = false;
 
-                        // 3. 执行代码替换
                         Patches.forEach(patch => {
                             if (patch.find.test(newFuncStr)) {
                                 newFuncStr = newFuncStr.replace(patch.find, patch.replace);
                                 isPatched = true;
-                                console.log('[Hook] 成功替换水印参数');
                             }
                         });
 
-                        // 4. 重构模块
                         if (isPatched) {
                             try {
-                                // 使用 eval 重新生成函数，完美保留压缩后的参数名 (t, e, n 等)
-                                // 避免 "t is not defined" 错误
                                 const patchedFactory = (0, eval)(`(${newFuncStr})`);
                                 modules[moduleId] = patchedFactory;
-                                console.log('[Hook] 水印参数已清除 (Eval Mode)');
+                                // console.log('[Hook] 水印已清除 (Eval Mode)');
                             } catch (e) {
-                                console.error('[Hook Error] 重构失败:', e);
+                                console.error('[Hook Error]', e);
                             }
                         }
                     }
                 }
-
                 return originalPush.call(this, chunk);
             };
         };
 
-        // 拦截 Webpack 加载
         let webpackGlobal = chunkWindow[GlobalVarName];
         if (Array.isArray(webpackGlobal)) {
             webpackGlobal.push = hookPush(webpackGlobal.push.bind(webpackGlobal));
@@ -551,16 +610,15 @@
             });
         }
     }
-    GM_registerMenuCommand("🔄 恢复悬浮球", () => {
-        document.getElementById('vm-ball-container').style.display = 'flex';
-    });
-    GM_registerMenuCommand("显示悬浮球", () => {
+
+    // 注册油猴命令（保持同步）
+    GM_registerMenuCommand("🔄 恢复悬浮球", () => document.getElementById('vm-ball-container').style.display = 'flex');
+    GM_registerMenuCommand("👀 显示悬浮球", () => {
         GM_setValue(BALL_VISIBLE_KEY, true);
         const el = document.getElementById('vm-ball-container');
         if (el) el.style.display = 'flex';
     });
-
-    GM_registerMenuCommand("隐藏悬浮球", () => {
+    GM_registerMenuCommand("🙈 隐藏悬浮球", () => {
         GM_setValue(BALL_VISIBLE_KEY, false);
         const el = document.getElementById('vm-ball-container');
         if (el) el.style.display = 'none';
@@ -569,11 +627,21 @@
     GM_registerMenuCommand(menuName, () => {
         isEnabled = !isEnabled;
         GM_setValue(STORAGE_KEY, isEnabled);
-        GM_setValue("GlobalVarName", GlobalVarName)
-        GM_setValue("Patches", Patches)
-        // 因为 Webpack 模块是在页面加载时初始化的，修改配置后需要刷新才能生效
         alert(`去除水印功能已${isEnabled ? '开启' : '关闭'}，即将刷新页面生效。`);
         location.reload();
     });
+    const toggleMsgName = GM_getValue('enable_msg_notify', true) ? '🔕 关闭消息通知' : '🔔 开启消息通知';
+    GM_registerMenuCommand(toggleMsgName, () => {
+        const current = GM_getValue('enable_msg_notify', true);
+        GM_setValue('enable_msg_notify', !current);
+        alert(`消息通知已${!current ? '开启' : '关闭'}。`);
+    });
     hookWebpack();
+    checkMessages();
+    setInterval(() => {
+        // 假设你存了个开关叫 'enable_msg_notify'
+        if (GM_getValue('enable_msg_notify', true)) {
+            checkMessages();
+        }
+    }, MSG_CONFIG.interval);
 })();
