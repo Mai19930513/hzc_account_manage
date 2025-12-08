@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         惠资产账户管理 (自动同步Token版)
+// @name         惠资产账户管理 (自动同步Token版-修复验证码登录)
 // @namespace    http://violentmonkey.net/
-// @version      1.3
-// @description  管理账号+快速切换+去水印+Token状态检测+自动同步有效Token
+// @version      1.4
+// @description  管理账号+快速切换+去水印
 // @author       Mai
 // @match        *://*.yonghui.cn/*
 // @grant        GM_registerMenuCommand
@@ -36,7 +36,7 @@
     ]
     const MSG_CONFIG = {
         url: 'https://hzc.yonghui.cn/hmsg/v1/1/messages/user?size=10&page=0&readFlag=0',
-        interval: 300 * 1000, // 5分钟检查一次
+        interval: 300 * 1000,
         checkHasUnread: (json) => {
             if (json && json.empty === false) {
                 const count = Number(json.totalElements);
@@ -106,18 +106,26 @@
         }
     }
 
-    // 核心改进：检查消息并自动同步Token
-    function checkMessages() {
-        if (!GM_getValue('enable_msg_notify', true)) {
-            return;
+    // 更新托管的Token配置（修复登录问题的关键）
+    function updateManagedToken(key, value) {
+        if (!activeProfileId || !CONFIG.list[activeProfileId]) return;
+        if (!value || value === "null" || value === "undefined") return;
+
+        // 如果值发生了变化，更新内存和存储
+        if (CONFIG.list[activeProfileId].data[key] !== value) {
+            console.log(`[VM] 检测到登录更新，自动同步 ${key}`);
+            CONFIG.list[activeProfileId].data[key] = value;
+            if(LOCK_MAP[key]) LOCK_MAP[key] = value; // 更新内存锁
+            GM_setValue('VM_ACCOUNT_MANAGER', CONFIG);
         }
+    }
+
+    function checkMessages() {
+        if (!GM_getValue('enable_msg_notify', true)) return;
         
-        // 获取浏览器当前实际的 Token
         const realTimeToken = getCookie('access_token') || localStorage.getItem('access_token');
         if (!realTimeToken) return;
 
-        console.log('[MsgPoller] 正在检查消息与Token状态...');
-        
         fetch(MSG_CONFIG.url, {
             method: 'GET',
             headers: {
@@ -127,45 +135,24 @@
             credentials: 'include'
         })
             .then(response => {
-                // 1. 自动同步逻辑：如果请求成功(Token有效)
                 if (response.ok) {
-                    // 检查当前是否有正在托管的账号
+                    // 二次校验，防止fetch期间Token又变了
                     if (activeProfileId && CONFIG.list[activeProfileId]) {
                         const storedToken = CONFIG.list[activeProfileId].data['access_token'];
-                        // 如果 实际Token 与 存储Token 不一致，说明Token更新了
                         if (realTimeToken !== storedToken) {
-                            console.log(`[AutoSync] 检测到Token更新且有效，正在同步到账号 [${CONFIG.list[activeProfileId].name}]...`);
-                            
-                            // 更新内存配置
-                            CONFIG.list[activeProfileId].data['access_token'] = realTimeToken;
-                            if (activeProfile) activeProfile.data['access_token'] = realTimeToken;
-                            
-                            // 保存到存储
-                            GM_setValue('VM_ACCOUNT_MANAGER', CONFIG);
-                            
-                            // 提示用户
+                            updateManagedToken('access_token', realTimeToken);
                             GM_notification({
                                 text: `检测到最新的登录凭证，已自动同步到账号：${CONFIG.list[activeProfileId].name}`,
                                 title: "🔄 Token自动同步成功",
                                 timeout: 3000
                             });
-                            
-                            // 如果悬浮窗开着，刷新一下列表状态
-                            const listEl = document.querySelector('.vm-list');
-                            if (listEl && document.getElementById('vm-menu-panel').style.display !== 'none') {
-                                renderAccountList(listEl);
-                            }
                         }
                     }
-                } else if (response.status === 401) {
-                    console.warn('[MsgPoller] 当前Token已失效 (401)');
                 }
-
                 if (!response.ok) throw new Error('Network response was not ok');
                 return response.json();
             })
             .then(data => {
-                // 2. 消息通知逻辑
                 const hasUnread = MSG_CONFIG.checkHasUnread(data);
                 const currentCount = Number(MSG_CONFIG.getUnreadCount(data)) || 0;
 
@@ -186,45 +173,62 @@
                 lastUnreadStatus = hasUnread;
                 lastUnreadCount = currentCount;
             })
-            .catch(error => {
-                // 静默失败，不打扰用户
-            });
+            .catch(() => {});
     }
 
     // =================================================
-    // 🚀 核心拦截逻辑
+    // 🚀 核心拦截逻辑 (已修复验证码登录Bug)
     // =================================================
     if (IS_ACTIVE) {
         console.log(`%c[VM] 托管中: ${activeProfile.name}`, "color: #00e676; font-weight: bold;");
 
+        // 初始强制写入一次，保证打开页面即登录
         KEYS.forEach(key => {
             const val = LOCK_MAP[key];
             try {
                 if (localStorage.getItem(key) !== val) localStorage.setItem(key, val);
                 if (sessionStorage.getItem(key) !== val) sessionStorage.setItem(key, val);
-                const cookieStr = document.cookie || "";
-                const count = (cookieStr.match(new RegExp(`(?:^|;\\s*)${key}=`, 'g')) || []).length;
-                if (count === 0 || count > 1 || getCookie(key) !== val) {
-                    safeSetCookie(key, val);
-                }
+                if (getCookie(key) !== val) safeSetCookie(key, val);
             } catch (e) { }
         });
 
         try {
+            // 修复1：Storage 劫持逻辑修改
             const hijackProto = (proto) => {
                 const _set = proto.setItem;
                 const _remove = proto.removeItem;
                 const _clear = proto.clear;
-                proto.setItem = function (k, v) { if (!isExiting && LOCK_MAP[k]) return; _set.apply(this, arguments); };
-                proto.removeItem = function (k) { if (!isExiting && LOCK_MAP[k]) return; _remove.apply(this, arguments); };
+                
+                proto.setItem = function (k, v) { 
+                    if (!isExiting && LOCK_MAP[k]) {
+                        // 【关键修改】如果网站尝试写入新的Token，允许写入并同步更新脚本配置
+                        // 而不是直接 return 阻止
+                        if (v && v !== LOCK_MAP[k]) {
+                            updateManagedToken(k, v);
+                        }
+                        // 依然执行原方法，让网站正常感知写入成功
+                        _set.apply(this, arguments); 
+                        return;
+                    }
+                    _set.apply(this, arguments); 
+                };
+
+                proto.removeItem = function (k) { 
+                    // 防止意外登出，但允许手动退出操作
+                    if (!isExiting && LOCK_MAP[k]) return; 
+                    _remove.apply(this, arguments); 
+                };
+                
                 proto.clear = function () {
                     if (isExiting) { _clear.apply(this); return; }
                     _clear.apply(this);
+                    // 清空时自动恢复受保护的 key
                     KEYS.forEach(k => this.setItem(k, LOCK_MAP[k]));
                 };
             };
             hijackProto(Storage.prototype);
 
+            // 修复2：Cookie 劫持逻辑修改
             const cookieDesc = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie') ||
                 Object.getOwnPropertyDescriptor(HTMLDocument.prototype, 'cookie');
             if (cookieDesc && cookieDesc.set) {
@@ -236,7 +240,19 @@
                         val = String(val).trim();
                         if (!isExiting) {
                             for (let key of KEYS) {
-                                if (val.startsWith(`${key}=`)) return;
+                                if (val.startsWith(`${key}=`)) {
+                                    // 提取新 Cookie 的值
+                                    const match = val.match(new RegExp(`^${key}=([^;]+)`));
+                                    const newVal = match ? match[1] : null;
+                                    
+                                    // 【关键修改】如果检测到 Cookie 更新，同步到配置
+                                    if (newVal && newVal !== LOCK_MAP[key]) {
+                                        updateManagedToken(key, newVal);
+                                    }
+                                    // 允许写入
+                                    _set.call(document, val);
+                                    return;
+                                }
                             }
                         }
                         _set.call(document, val);
@@ -247,7 +263,7 @@
     }
 
     // =================================================
-    // 🎨 UI 构建区域
+    // 🎨 UI 构建区域 (保持不变)
     // =================================================
     function initUI() {
         const style = document.createElement('style');
@@ -290,13 +306,11 @@
             .vm-list-item .icon { margin-right: 8px; font-size: 16px; width: 20px; text-align: center;}
             .vm-list-item .del-btn { margin-left: auto; color: #999; padding: 4px; font-size: 12px; }
             .vm-list-item .del-btn:hover { color: #ff4444; }
-            
             .vm-token-status {
                 font-size: 10px; margin-left: 8px; padding: 2px 6px; border-radius: 4px; background: #eee; color: #999; font-weight: normal; white-space: nowrap;
             }
             .vm-token-status.valid { background: #e6f4ea; color: #1e8e3e; }
             .vm-token-status.invalid { background: #fce8e6; color: #d93025; }
-
             .vm-toolbar {
                 padding: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
                 border-top: 1px solid #eee; background: #fff;
@@ -694,7 +708,7 @@
     });
     hookWebpack();
     
-    // 启动时立即检查一次（包含自动同步逻辑）
+    // 启动时立即检查一次
     checkMessages();
     
     setInterval(() => {
