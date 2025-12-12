@@ -122,7 +122,7 @@
 
     function checkMessages() {
         if (!GM_getValue('enable_msg_notify', true)) return;
-        
+
         const realTimeToken = getCookie('access_token') || localStorage.getItem('access_token');
         if (!realTimeToken) return;
 
@@ -198,8 +198,8 @@
                 const _set = proto.setItem;
                 const _remove = proto.removeItem;
                 const _clear = proto.clear;
-                
-                proto.setItem = function (k, v) { 
+
+                proto.setItem = function (k, v) {
                     if (!isExiting && LOCK_MAP[k]) {
                         // 【关键修改】如果网站尝试写入新的Token，允许写入并同步更新脚本配置
                         // 而不是直接 return 阻止
@@ -207,18 +207,18 @@
                             updateManagedToken(k, v);
                         }
                         // 依然执行原方法，让网站正常感知写入成功
-                        _set.apply(this, arguments); 
+                        _set.apply(this, arguments);
                         return;
                     }
-                    _set.apply(this, arguments); 
+                    _set.apply(this, arguments);
                 };
 
-                proto.removeItem = function (k) { 
+                proto.removeItem = function (k) {
                     // 防止意外登出，但允许手动退出操作
-                    if (!isExiting && LOCK_MAP[k]) return; 
-                    _remove.apply(this, arguments); 
+                    if (!isExiting && LOCK_MAP[k]) return;
+                    _remove.apply(this, arguments);
                 };
-                
+
                 proto.clear = function () {
                     if (isExiting) { _clear.apply(this); return; }
                     _clear.apply(this);
@@ -244,7 +244,7 @@
                                     // 提取新 Cookie 的值
                                     const match = val.match(new RegExp(`^${key}=([^;]+)`));
                                     const newVal = match ? match[1] : null;
-                                    
+
                                     // 【关键修改】如果检测到 Cookie 更新，同步到配置
                                     if (newVal && newVal !== LOCK_MAP[key]) {
                                         updateManagedToken(key, newVal);
@@ -707,13 +707,25 @@
         alert(`消息通知已${!current ? '开启' : '关闭'}。`);
     });
     hookWebpack();
-    
+
     // 启动时立即检查一次
     checkMessages();
-    
     setInterval(() => {
         if (GM_getValue('enable_msg_notify', true)) {
             checkMessages();
         }
     }, MSG_CONFIG.interval);
+
+        window.addEventListener('load', () => {
+    const phoneInput = document.getElementById("phone");
+    if (phoneInput) { // 只有当元素存在时才执行
+        phoneInput.autocomplete = "on";
+      console.log("phone已改为记住手机号");
+    } else {
+        console.warn("未找到 ID 为 'phone' 的元素，可能 ID 变了或者尚未加载。");
+    }
+      });
+
+
+
 })();
