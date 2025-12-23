@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         »İ×Ê²ú¸ü¸ÄÎªÃÜÂëµÇÂ¼
+// @name         æƒ èµ„äº§æ›´æ”¹ä¸ºå¯†ç ç™»å½•
 // @namespace    Violentmonkey Scripts
 // @match        *://hzc.yonghui.cn/oauth/login*
 // @grant        GM_xmlhttpRequest
@@ -7,55 +7,55 @@
 // @grant        GM_getValue
 // @version      1.1
 // @author       Mai
-// @description  ½«»İ×Ê²ú´ÓÑéÖ¤ÂëµÇÂ¼»Ö¸´ÎªÃÜÂëµÇÂ¼
+// @description  å°†æƒ èµ„äº§ä»éªŒè¯ç ç™»å½•æ¢å¤ä¸ºå¯†ç ç™»å½•
 // @license      MIT
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    // ÅäÖÃµÇÂ¼½Ó¿Ú
+    // é…ç½®ç™»å½•æ¥å£
     const LOGIN_URL = 'https://hzc.yonghui.cn/oauth/login';
     const CUSTOM_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36';
 
     function init() {
         const form = document.getElementById('phoneForm');
         if (form) {
-            // Ìæ»»±íµ¥ÄÚÈİ
+            // æ›¿æ¢è¡¨å•å†…å®¹
             form.innerHTML = `
                 <input autocomplete="on" type="text" name="username" id="username"
                        class="form-control login-margin-b"
-                       placeholder="ÇëÊäÈëÓÃ»§Ãû"
+                       placeholder="è¯·è¾“å…¥ç”¨æˆ·å"
                        style="color: #FFFFFF"/>
 
                 <input autocomplete="on" type="password" name="password" id="password"
                        class="form-control login-margin-b"
-                       placeholder="ÇëÊäÈëÃÜÂë"
+                       placeholder="è¯·è¾“å…¥å¯†ç "
                        style="color: #FFFFFF"/>
 
                 <button id="loginSubmit" type="button"
                         class="btn-theme btn-theme-sm btn-base-bg text-uppercase login-margin-b"
                         style="margin-bottom: 6px !important; width: 100%;">
-                  µÇÂ¼
+                  ç™»å½•
                 </button>
 
                 <div class="help-link" style="float:right;">
                     <a target="_blank" class="forget-password" href="/oauth/public/default/register.html"
                        style="font-family: PingFangSC-Regular;font-size: 12px;color: #29BECE;letter-spacing: 0;line-height: 20px;">
-                      ¹©Ó¦ÉÌ×¢²á
+                      ä¾›åº”å•†æ³¨å†Œ
                     </a>
                 </div>
             `;
 
-            // °ó¶¨µÇÂ¼ÊÂ¼ş
+            // ç»‘å®šç™»å½•äº‹ä»¶
             const loginBtn = document.getElementById('loginSubmit');
             loginBtn.addEventListener('click', handleLogin);
 
-            console.log('? GM_xmlhttpRequestµÇÂ¼±íµ¥ÒÑ¾ÍĞ÷');
+            console.log('? GM_xmlhttpRequestç™»å½•è¡¨å•å·²å°±ç»ª');
         }
     }
 
-    // Base64±àÂëº¯Êı
+    // Base64ç¼–ç å‡½æ•°
     function base64Encode(str) {
         try {
             return btoa(unescape(encodeURIComponent(str)));
@@ -64,7 +64,7 @@
         }
     }
 
-    // Ç¿ÖÆHTTPSÌø×ªº¯Êı
+    // å¼ºåˆ¶HTTPSè·³è½¬å‡½æ•°
     function forceHTTPSRedirect() {
         if (window.location.href.includes('http://hzc.yonghui.cn')) {
             const httpsUrl = window.location.href.replace('http://hzc.yonghui.cn', 'https://hzc.yonghui.cn');
@@ -74,24 +74,24 @@
         return false;
     }
 
-    // ´¦ÀíµÇÂ¼ - Ê¹ÓÃGM_xmlhttpRequest
+    // å¤„ç†ç™»å½• - ä½¿ç”¨GM_xmlhttpRequest
     function handleLogin() {
         const username = document.getElementById('username').value.trim();
         const password = document.getElementById('password').value;
 
         if (!username || !password) {
-            alert('ÇëÊäÈëÓÃ»§ÃûºÍÃÜÂë£¡');
+            alert('è¯·è¾“å…¥ç”¨æˆ·åå’Œå¯†ç ï¼');
             return;
         }
 
         const loginBtn = document.getElementById('loginSubmit');
         loginBtn.disabled = true;
-        loginBtn.textContent = 'µÇÂ¼ÖĞ...';
+        loginBtn.textContent = 'ç™»å½•ä¸­...';
 
-        // ×¼±¸POSTÊı¾İ
+        // å‡†å¤‡POSTæ•°æ®
         const postData = `username=${encodeURIComponent(username)}&password=${base64Encode(password)}&plaintext_password=**********`;
 
-        console.log('? ·¢ËÍGM_xmlhttpRequest POST:', LOGIN_URL);
+        console.log('? å‘é€GM_xmlhttpRequest POST:', LOGIN_URL);
 
         GM_xmlhttpRequest({
             method: 'POST',
@@ -108,7 +108,7 @@
             timeout: 10000,
             onload: function (response) {
 
-                // ÌáÈ¡accessToken
+                // æå–accessToken
                 const tokenMatch = response.responseText.match(/"accessToken"\s*:\s*"([^"]+)"/i) ||
                     response.responseText.match(/accessToken\s*:\s*"([^"]+)"/i) ||
                     response.responseText.match(/'accessToken'\s*:\s*'([^']+)'/i) ||
@@ -116,58 +116,58 @@
 
                 if (tokenMatch) {
                     const accessToken = tokenMatch[1];
-                    console.log('? Token»ñÈ¡³É¹¦:', accessToken);
+                    console.log('? Tokenè·å–æˆåŠŸ:', accessToken);
 
-                    // ±£´ætokenµ½µ±Ç°ÓòÓë»á»°£¨¼æÈİ²»Í¬¼üÃû£©
+                    // ä¿å­˜tokenåˆ°å½“å‰åŸŸä¸ä¼šè¯ï¼ˆå…¼å®¹ä¸åŒé”®åï¼‰
                     localStorage.setItem('access_token', accessToken);
                     sessionStorage.setItem('access_token', accessToken);
 
-                    // ÉèÖÃcookie£¬¹© https://hzcf.yonghui.cn/ Ê¹ÓÃ£¨ÓòÉèÖÃÎª .yonghui.cn£©
+                    // è®¾ç½®cookieï¼Œä¾› https://hzcf.yonghui.cn/ ä½¿ç”¨ï¼ˆåŸŸè®¾ç½®ä¸º .yonghui.cnï¼‰
                     (function setCookieForHzcf(token) {
-                        const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toUTCString(); // 7Ìì
+                        const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toUTCString(); // 7å¤©
                         const v = encodeURIComponent(token);
                         document.cookie = `access_token=${v}; Domain=.yonghui.cn; Path=/; Expires=${expires}; Secure; SameSite=None`;
                     })(accessToken);
 
-                    // µÇÂ¼³É¹¦ºóÌø×ªµ½Ä¿±êÓò
+                    // ç™»å½•æˆåŠŸåè·³è½¬åˆ°ç›®æ ‡åŸŸ
                     setTimeout(() => {
                         window.location.href = "https://hzcf.yonghui.cn/";
                     }, 500);
 
                 } else {
-                    console.error('? Î´ÕÒµ½Token');
-                    alert('µÇÂ¼Ê§°Ü£¬Î´ÕÒµ½accessToken\n\nÏìÓ¦ÄÚÈİ:\n' + response.responseText.substring(0, 200));
+                    console.error('? æœªæ‰¾åˆ°Token');
+                    alert('ç™»å½•å¤±è´¥ï¼Œæœªæ‰¾åˆ°accessToken\n\nå“åº”å†…å®¹:\n' + response.responseText.substring(0, 200));
                 }
 
                 loginBtn.disabled = false;
-                loginBtn.textContent = 'µÇÂ¼';
+                loginBtn.textContent = 'ç™»å½•';
             },
             onerror: function (response) {
-                console.error('? GM_xmlhttpRequestÇëÇóÊ§°Ü:', response);
-                alert('ÇëÇóÊ§°Ü: ' + (response.error || 'ÍøÂç´íÎó'));
+                console.error('? GM_xmlhttpRequestè¯·æ±‚å¤±è´¥:', response);
+                alert('è¯·æ±‚å¤±è´¥: ' + (response.error || 'ç½‘ç»œé”™è¯¯'));
                 loginBtn.disabled = false;
-                loginBtn.textContent = 'µÇÂ¼';
+                loginBtn.textContent = 'ç™»å½•';
             },
             ontimeout: function (response) {
-                console.error('? ÇëÇó³¬Ê±:', response);
-                alert('ÇëÇó³¬Ê±£¬ÇëÖØÊÔ');
+                console.error('? è¯·æ±‚è¶…æ—¶:', response);
+                alert('è¯·æ±‚è¶…æ—¶ï¼Œè¯·é‡è¯•');
                 loginBtn.disabled = false;
-                loginBtn.textContent = 'µÇÂ¼';
+                loginBtn.textContent = 'ç™»å½•';
             }
         });
     }
 
-    // Ò³Ãæ¼ÓÔØÊ±Ç¿ÖÆHTTPS
+    // é¡µé¢åŠ è½½æ—¶å¼ºåˆ¶HTTPS
     forceHTTPSRedirect();
 
-    // Ò³Ãæ¼ÓÔØÍê³ÉºóÖ´ĞĞ
+    // é¡µé¢åŠ è½½å®Œæˆåæ‰§è¡Œ
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
     } else {
         init();
     }
 
-    // ´¦Àí¶¯Ì¬¼ÓÔØ
+    // å¤„ç†åŠ¨æ€åŠ è½½
     const observer = new MutationObserver(function (mutations) {
         mutations.forEach(function (mutation) {
             if (mutation.type === 'childList') {
@@ -185,7 +185,7 @@
         subtree: true
     });
 
-    // »ñÈ¡token¸¨Öúº¯Êı
+    // è·å–tokenè¾…åŠ©å‡½æ•°
     window.getAccessToken = function () {
         return localStorage.getItem('accessToken') || sessionStorage.getItem('accessToken');
     };
