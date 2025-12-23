@@ -3,8 +3,6 @@
 // @namespace    Violentmonkey Scripts
 // @match        *://hzc.yonghui.cn/oauth/login*
 // @grant        GM_xmlhttpRequest
-// @grant        GM_setValue
-// @grant        GM_getValue
 // @version      1.1
 // @author       Mai
 // @description  将惠资产从验证码登录恢复为密码登录
@@ -119,8 +117,7 @@
                     console.log('? Token获取成功:', accessToken);
 
                     // 保存token到当前域与会话（兼容不同键名）
-                    localStorage.setItem('access_token', accessToken);
-                    sessionStorage.setItem('access_token', accessToken);
+                    // localStorage.setItem('access_token', accessToken);
 
                     // 设置cookie，供 https://hzcf.yonghui.cn/ 使用
                     (function setCookieForHzcf(token) {
