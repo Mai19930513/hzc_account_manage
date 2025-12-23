@@ -122,7 +122,7 @@
                     localStorage.setItem('access_token', accessToken);
                     sessionStorage.setItem('access_token', accessToken);
 
-                    // 设置cookie，供 https://hzcf.yonghui.cn/ 使用（域设置为 .yonghui.cn）
+                    // 设置cookie，供 https://hzcf.yonghui.cn/ 使用
                     (function setCookieForHzcf(token) {
                         const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toUTCString(); // 7天
                         const v = encodeURIComponent(token);
